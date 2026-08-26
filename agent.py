@@ -22,6 +22,11 @@ logging.basicConfig(
 )
 log = logging.getLogger("alexandria")
 
+# Silence noisy external libraries
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 load_dotenv()
 
 # Environment and model configuration
@@ -248,7 +253,7 @@ CRITICAL RULES:
 
 def run_alexandria_cli(max_steps: int = 10) -> None:
     """
-    Execute the interactive CLI loop for Alexandria with complete error isolation.
+    Execute the interactive CLI loop for Alexandria with token usage tracking.
 
     Args:
         max_steps (int, optional): Maximum tool execution iterations per user prompt. Defaults to 10.
@@ -274,6 +279,7 @@ def run_alexandria_cli(max_steps: int = 10) -> None:
                 continue
 
             messages.append({"role": "user", "content": user_input})
+            turn_total_tokens = 0
 
             # ReAct Execution Loop
             for step in range(max_steps):
@@ -288,12 +294,23 @@ def run_alexandria_cli(max_steps: int = 10) -> None:
                     log.error(f"Provider API call failed: {e}")
                     break
 
+                # Extract and log token usage for this step
+                usage = getattr(response, "usage", None)
+                if usage:
+                    step_tokens = usage.total_tokens
+                    turn_total_tokens += step_tokens
+                    log.info(
+                        f"Step {step} Tokens -> Prompt: {usage.prompt_tokens}, "
+                        f"Completion: {usage.completion_tokens}, Total: {step_tokens}"
+                    )
+
                 msg = response.choices[0].message
                 messages.append(msg)
 
                 # Termination condition: model provided final textual response
                 if not msg.tool_calls:
                     print(f"\nAlexandria:\n{msg.content}")
+                    print(f"\n📊 [Token Usage] Total tokens consumed this turn: {turn_total_tokens}")
                     break
 
                 for call in msg.tool_calls:
@@ -324,6 +341,7 @@ def run_alexandria_cli(max_steps: int = 10) -> None:
                     })
             else:
                 print("\nAlexandria: Reached the maximum execution steps without producing a final answer.")
+                print(f"📊 [Token Usage] Total tokens consumed across {max_steps} steps: {turn_total_tokens}")
 
         except KeyboardInterrupt:
             print("\nSession ended.")
@@ -331,7 +349,6 @@ def run_alexandria_cli(max_steps: int = 10) -> None:
         except Exception as err:
             log.exception(f"Unhandled CLI exception: {err}")
             print(f"\n[Error] Unexpected error: {err}")
-
 
 if __name__ == "__main__":
     run_alexandria_cli()
