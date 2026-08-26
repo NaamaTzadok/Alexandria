@@ -1,3 +1,11 @@
+"""
+Alexandria - Autonomous Literary Curator Agent.
+
+This module implements a CLI-based ReAct agent using OpenAI-compatible APIs (Groq)
+and the Open Library API to search, verify, and curate personalized book recommendations.
+State and user preferences are persisted locally in a JSON file.
+"""
+
 import json
 import logging
 import os
@@ -6,15 +14,21 @@ from dotenv import load_dotenv
 from openai import OpenAI
 import requests
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-log = logging.getLogger("agent")
+# Configure application logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S"
+)
+log = logging.getLogger("alexandria")
 
 load_dotenv()
 
+# Environment and model configuration
 api_key = os.getenv("GROQ_API_KEY")
 if not api_key:
-    log.error("GROQ_API_KEY environment variable is missing.")
-    raise SystemExit("Please set GROQ_API_KEY in your .env file or environment.")
+    log.error("GROQ_API_KEY environment variable is not set.")
+    raise SystemExit("Missing GROQ_API_KEY. Please provide it in your .env file or environment.")
 
 client = OpenAI(
     base_url="https://api.groq.com/openai/v1",
@@ -31,10 +45,16 @@ DEFAULT_MEMORY: Dict[str, Any] = {
 }
 
 
-# --- Memory Management Functions ---
+# --- State & Memory Persistence ---
 
 def load_memory() -> Dict[str, Any]:
-    """Load user preferences and history from a local JSON file with fallback handling."""
+    """
+    Load user preferences and reading history from the local JSON storage.
+
+    Returns:
+        Dict[str, Any]: Dictionary containing stored user memory. Falls back
+        to DEFAULT_MEMORY if the file does not exist or is corrupted.
+    """
     if not os.path.exists(MEMORY_FILE):
         save_memory(DEFAULT_MEMORY)
         return DEFAULT_MEMORY.copy()
@@ -43,38 +63,54 @@ def load_memory() -> Dict[str, Any]:
         with open(MEMORY_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
             if not isinstance(data, dict):
+                log.warning("Corrupted memory format detected. Resetting to defaults.")
                 return DEFAULT_MEMORY.copy()
             return data
     except Exception as e:
-        log.warning(f"Failed to load memory file ({e}), resetting to default structure.")
+        log.warning(f"Error loading memory file ({e}). Falling back to defaults.")
         return DEFAULT_MEMORY.copy()
 
 
 def save_memory(memory_data: Dict[str, Any]) -> None:
-    """Save updated memory to the local JSON file safely."""
+    """
+    Persist user preferences and memory state to the local JSON file.
+
+    Args:
+        memory_data (Dict[str, Any]): The memory structure to write to disk.
+    """
     try:
         with open(MEMORY_FILE, "w", encoding="utf-8") as f:
             json.dump(memory_data, f, indent=2, ensure_ascii=False)
     except Exception as e:
-        log.error(f"Failed to save memory file: {e}")
+        log.error(f"Failed to write memory to file: {e}")
 
 
-# --- Tool Implementations ---
+# --- Agent Tools ---
 
 def search_books(query: str, max_results: int = 6) -> str:
-    """Search Open Library API for books matching a title, author, or subject keyword."""
+    """
+    Query the Open Library REST API for book metadata matching given terms.
+
+    Args:
+        query (str): Keywords, title, author, or subject to search for.
+        max_results (int, optional): Maximum number of search results. Defaults to 6.
+
+    Returns:
+        str: JSON-serialized list of matched book metadata, or an error/empty message.
+    """
     url = "https://openlibrary.org/search.json"
-    headers = {"User-Agent": "AlexandriaBookCurator/1.0 (educational-project)"}
+    headers = {"User-Agent": "AlexandriaBookCurator/1.0 (educational-agent-project)"}
     params = {
         "q": query,
         "limit": max_results,
         "fields": "title,author_name,first_publish_year,number_of_pages_median,ratings_average,subject",
     }
+    
     try:
         response = requests.get(url, params=params, headers=headers, timeout=10)
         if response.status_code != 200:
-            log.error(f"Open Library API returned status {response.status_code}: {response.text[:200]}")
-            return f"Error: Open Library returned status {response.status_code}"
+            log.error(f"Open Library API error (HTTP {response.status_code}): {response.text[:200]}")
+            return f"Error: Open Library returned status code {response.status_code}"
 
         data = response.json()
         docs = data.get("docs", [])
@@ -97,14 +133,24 @@ def search_books(query: str, max_results: int = 6) -> str:
         return json.dumps(book_results, ensure_ascii=False)
 
     except requests.exceptions.Timeout:
+        log.warning("Open Library request timed out.")
         return "Error: Request to Open Library timed out."
     except Exception as e:
-        log.exception("Unexpected error in search_books")
+        log.exception("Unexpected error occurred while querying Open Library API.")
         return f"Error querying Open Library API: {str(e)}"
 
 
 def update_user_preference(category: str, item: str) -> str:
-    """Update user preference profile safely."""
+    """
+    Store or update a specific preference item in the user's persistent profile.
+
+    Args:
+        category (str): Target category ('liked_books', 'disliked_books', 'favorite_genres', or 'notes').
+        item (str): The preference or constraint to record.
+
+    Returns:
+        str: Status message describing the outcome of the update.
+    """
     try:
         memory = load_memory()
         if category not in memory:
@@ -114,14 +160,16 @@ def update_user_preference(category: str, item: str) -> str:
             if item not in memory[category]:
                 memory[category].append(item)
                 save_memory(memory)
-                return f"Successfully added '{item}' to {category}."
-            return f"'{item}' is already in {category}."
+                return f"Successfully added '{item}' to category '{category}'."
+            return f"Item '{item}' already exists in category '{category}'."
 
-        return f"Invalid category: {category}"
+        return f"Invalid category: '{category}'"
     except Exception as e:
+        log.exception("Failed to update user preference.")
         return f"Error updating preference: {str(e)}"
 
 
+# Tool mapping and schemas for function calling
 AVAILABLE_TOOLS = {
     "search_books": search_books,
     "update_user_preference": update_user_preference,
@@ -132,7 +180,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "search_books",
-            "description": "Searches Open Library by topic, genre, keywords, or authors, returning volume details and topics.",
+            "description": "Searches Open Library by topic, genre, keywords, or authors, returning book metadata and subjects.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -142,7 +190,7 @@ TOOLS_SCHEMA = [
                     },
                     "max_results": {
                         "type": "integer",
-                        "description": "Number of results to retrieve (default 6)",
+                        "description": "Maximum number of results to retrieve (default 6)",
                     },
                 },
                 "required": ["query"],
@@ -164,7 +212,7 @@ TOOLS_SCHEMA = [
                     },
                     "item": {
                         "type": "string",
-                        "description": "The value to store",
+                        "description": "The specific preference or constraint to store",
                     },
                 },
                 "required": ["category", "item"],
@@ -175,7 +223,12 @@ TOOLS_SCHEMA = [
 
 
 def build_system_prompt() -> str:
-    """Construct dynamic system prompt with current user memory injected."""
+    """
+    Construct the dynamic system prompt injecting the current persistent user memory.
+
+    Returns:
+        str: The formatted system prompt.
+    """
     memory = load_memory()
     return f"""You are Alexandria, an enlightened literary curator.
 Your mission is to recommend verified books by retrieving real-time data from Open Library.
@@ -194,7 +247,12 @@ CRITICAL RULES:
 
 
 def run_alexandria_cli(max_steps: int = 10) -> None:
-    """Interactive CLI loop for Alexandria with complete error containment."""
+    """
+    Execute the interactive CLI loop for Alexandria with complete error isolation.
+
+    Args:
+        max_steps (int, optional): Maximum tool execution iterations per user prompt. Defaults to 10.
+    """
     print("=" * 60)
     print("🏛️  Welcome to Alexandria! (Type 'exit' or 'quit' to stop)")
     print("=" * 60)
@@ -217,6 +275,7 @@ def run_alexandria_cli(max_steps: int = 10) -> None:
 
             messages.append({"role": "user", "content": user_input})
 
+            # ReAct Execution Loop
             for step in range(max_steps):
                 try:
                     response = client.chat.completions.create(
@@ -226,11 +285,13 @@ def run_alexandria_cli(max_steps: int = 10) -> None:
                     )
                 except Exception as e:
                     print(f"\n[Connection Error] Failed to communicate with LLM provider: {e}")
+                    log.error(f"Provider API call failed: {e}")
                     break
 
                 msg = response.choices[0].message
                 messages.append(msg)
 
+                # Termination condition: model provided final textual response
                 if not msg.tool_calls:
                     print(f"\nAlexandria:\n{msg.content}")
                     break
@@ -246,28 +307,30 @@ def run_alexandria_cli(max_steps: int = 10) -> None:
                     else:
                         try:
                             args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                            log.info(f"Step {step} | Tool: {fn_name} | Arguments: {args}")
+                            log.info(f"Step {step} | Tool: {fn_name} | Args: {args}")
                             result = fn(**args)
                         except json.JSONDecodeError:
                             result = f"Error: Failed to parse JSON arguments for tool '{fn_name}'."
+                            log.error(f"Invalid JSON in tool call arguments: {raw_args}")
                         except Exception as e:
                             result = f"Error while running '{fn_name}': {e}"
+                            log.exception(f"Execution error in tool {fn_name}")
 
-                    log.info(f"Step {step} | Result: {str(result)[:100]}")
+                    log.info(f"Step {step} | Result: {str(result)[:100]}...")
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call.id,
                         "content": str(result),
                     })
             else:
-                print("\nAlexandria: I have reached the maximum number of steps without a final answer.")
+                print("\nAlexandria: Reached the maximum execution steps without producing a final answer.")
 
         except KeyboardInterrupt:
             print("\nSession ended.")
             break
         except Exception as err:
-            log.exception(f"Unexpected CLI error: {err}")
-            print(f"\n[Error] Something unexpected happened: {err}")
+            log.exception(f"Unhandled CLI exception: {err}")
+            print(f"\n[Error] Unexpected error: {err}")
 
 
 if __name__ == "__main__":
