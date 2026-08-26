@@ -112,10 +112,14 @@ def search_books(query: str, max_results: int = 6) -> str:
     }
     
     try:
-        response = requests.get(url, params=params, headers=headers, timeout=10)
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(max_retries=2)
+        session.mount("https://", adapter)
+
+        response = session.get(url, params=params, headers=headers, timeout=8)
         if response.status_code != 200:
-            log.error(f"Open Library API error (HTTP {response.status_code}): {response.text[:200]}")
-            return f"Error: Open Library returned status code {response.status_code}"
+            log.warning(f"Open Library API returned status {response.status_code}")
+            return f"Error: Open Library returned status {response.status_code}"
 
         data = response.json()
         docs = data.get("docs", [])
