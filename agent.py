@@ -4,6 +4,10 @@ from typing import Any, Dict, List
 import requests
 from dotenv import load_dotenv
 from openai import OpenAI
+import logging
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+log = logging.getLogger("agent")
 
 load_dotenv()
 
@@ -191,7 +195,7 @@ def run_alexandria_cli(max_steps: int = 10) -> None:
             messages.append({"role": "user", "content": user_input})
 
             # Agent Loop
-            for _ in range(max_steps):
+            for step in range(max_steps):
                 response = client.chat.completions.create(model=MODEL, messages=messages, tools=TOOLS_SCHEMA)
                 msg = response.choices[0].message
                 messages.append(msg)
@@ -202,10 +206,12 @@ def run_alexandria_cli(max_steps: int = 10) -> None:
                 for call in msg.tool_calls:
                     fn = AVAILABLE_TOOLS[call.function.name]
                     args = json.loads(call.function.arguments)
+                    log.info(f"Step {step} | Tool: {call.function.name} | Arguments: {args}")
                     try:
                         result = fn(**args)
                     except Exception as e:
                         result = f"error while running {call.function.name}: {e}"
+                    log.info(f"Step {step} | Result: {str(result)[:100]}")
                     messages.append({"role": "tool", "tool_call_id": call.id, "content": str(result)})
             else: 
                 print("I have reached the maximum number of steps without a final answer.")
