@@ -9,9 +9,10 @@ State and user preferences are persisted locally in a JSON file.
 import json
 import logging
 import os
+import time
 from typing import Any, Dict, List
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import OpenAI, RateLimitError
 import requests
 
 # Configure application logging
@@ -254,6 +255,16 @@ CRITICAL RULES:
 6. Provide 2-3 concise recommendations based strictly on the retrieved results with clear rationales.
 """
 
+def call_with_retry(messages, tools, max_retries=4):
+    """Call the OpenAI API with exponential backoff on rate limit errors."""
+    for attempt in range(max_retries):
+        try:
+            return client.chat.completions.create(model=MODEL, messages=messages, tools=tools)
+        except RateLimitError:
+            wait = 2 ** attempt          # 1, 2, 4, 8 seconds
+            print(f"rate limit, waiting {wait} seconds")
+            time.sleep(wait)
+    raise RuntimeError("failed after all attempts")
 
 def run_alexandria_cli(max_steps: int = 10) -> None:
     """
@@ -288,11 +299,7 @@ def run_alexandria_cli(max_steps: int = 10) -> None:
             # ReAct Execution Loop
             for step in range(max_steps):
                 try:
-                    response = client.chat.completions.create(
-                        model=MODEL,
-                        messages=messages,
-                        tools=TOOLS_SCHEMA,
-                    )
+                    response = call_with_retry(messages, TOOLS_SCHEMA)
                 except Exception as e:
                     print(f"\n[Connection Error] Failed to communicate with LLM provider: {e}")
                     log.error(f"Provider API call failed: {e}")
